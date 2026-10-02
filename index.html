@@ -37,12 +37,29 @@
       const documentInfo = await response.json();
       const decoded = decodeURIComponent(escape(atob((documentInfo.content || '').replace(/\s/g, ''))));
       const endpoint = JSON.parse(decoded);
-      if (!/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/i.test(endpoint.baseUrl || ''))
-        throw new Error('Опубликованный адрес интеграции некорректен.');
+      const candidates = Array.from(new Set(
+        (Array.isArray(endpoint.baseUrls) ? endpoint.baseUrls : [endpoint.baseUrl])
+          .filter(value => /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/i.test(value || ''))));
+      if (!candidates.length) throw new Error('Опубликованный адрес интеграции некорректен.');
+
+      const probes = candidates.map(async baseUrl => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        try {
+          const probe = await fetch(baseUrl + '/bitrix/ping?t=' + Date.now(), {
+            cache: 'no-store', signal: controller.signal
+          });
+          if (!probe.ok) throw new Error('Туннель не отвечает.');
+          return baseUrl;
+        } finally { clearTimeout(timeout); }
+      });
+      let baseUrl;
+      try { baseUrl = await Promise.any(probes); }
+      catch { throw new Error('Оба канала интеграции временно недоступны. Повторите через несколько секунд.'); }
 
       const form = document.createElement('form');
       form.method = 'post';
-      form.action = endpoint.baseUrl + '/bitrix/launch';
+      form.action = baseUrl + '/bitrix/launch';
       for (const [name, value] of Object.entries({ accessToken: token, entityType, entityId })) {
         const input = document.createElement('input');
         input.type = 'hidden'; input.name = name; input.value = String(value);
